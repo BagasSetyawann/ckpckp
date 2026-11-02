@@ -5,7 +5,7 @@ const { authenticate, requireRole, logActivity } = require('../middleware/auth')
 const router = express.Router();
 
 // GET /api/activities
-router.get('/', authenticate, (req, res) => {
+router.get('/', authenticate, async (req, res) => {
   const db = getDb();
   const { period_id, employee_id, tanggal, tanggal_mulai, tanggal_akhir } = req.query;
 
@@ -42,12 +42,12 @@ router.get('/', authenticate, (req, res) => {
   if (tanggal_akhir) { query += ' AND da.tanggal <= ?'; params.push(tanggal_akhir); }
 
   query += ' ORDER BY da.tanggal DESC, da.created_at DESC';
-  const activities = db.prepare(query).all(...params);
+  const activities = await db.prepare(query).all(...params);
   res.json(activities);
 });
 
 // GET /api/activities/calendar - Calendar view by month
-router.get('/calendar', authenticate, (req, res) => {
+router.get('/calendar', authenticate, async (req, res) => {
   const db = getDb();
   const { period_id, employee_id, year, month } = req.query;
 
@@ -70,47 +70,41 @@ router.get('/calendar', authenticate, (req, res) => {
   if (empId) { query += ' AND da.employee_id = ?'; params.push(empId); }
   if (period_id) { query += ' AND da.period_id = ?'; params.push(parseInt(period_id)); }
   if (year && month) {
-    query += ` AND strftime('%Y', da.tanggal) = ? AND strftime('%m', da.tanggal) = ?`;
-    params.push(year, month.toString().padStart(2, '0'));
+    // tanggal disimpan sebagai teks 'YYYY-MM-DD'
+    query += ` AND substr(da.tanggal, 1, 4) = ? AND substr(da.tanggal, 6, 2) = ?`;
+    params.push(String(year), month.toString().padStart(2, '0'));
   }
 
   query += ' GROUP BY da.tanggal ORDER BY da.tanggal';
-  const calendar = db.prepare(query).all(...params);
+  const calendar = await db.prepare(query).all(...params);
   res.json(calendar);
 });
 
 // GET /api/activities/daily-status - Status of all employees for a date
-router.get('/daily-status', authenticate, requireRole('KPA', 'Kasubbag'), (req, res) => {
+router.get('/daily-status', authenticate, requireRole('KPA', 'Kasubbag'), async (req, res) => {
   const db = getDb();
   const { tanggal } = req.query;
   const date = tanggal || new Date().toISOString().split('T')[0];
 
-  const employees = db.prepare(`
-    SELECT e.id, e.nama, e.jabatan, e.unit_kerja, u.username
+  const employees = await db.prepare(`
+    SELECT e.id, e.nama, e.jabatan, e.unit_kerja, u.username,
+      (SELECT COUNT(*) FROM daily_activities da WHERE da.employee_id = e.id AND da.tanggal = ?) as jumlah_kegiatan,
+      (SELECT AVG(da.persentase_capaian) FROM daily_activities da WHERE da.employee_id = e.id AND da.tanggal = ?) as avg_capaian,
+      (SELECT COUNT(*) FROM activity_evidence ae JOIN daily_activities da ON ae.activity_id = da.id
+        WHERE da.employee_id = e.id AND da.tanggal = ?) as jumlah_bukti
     FROM employees e JOIN users u ON e.user_id = u.id
     JOIN roles r ON u.role_id = r.id
     WHERE r.name = 'Anggota' AND u.is_active = 1
     ORDER BY e.nama
-  `).all();
+  `).all(date, date, date);
 
   const result = employees.map(emp => {
-    const activities = db.prepare(`
-      SELECT COUNT(*) as count, AVG(persentase_capaian) as avg_capaian
-      FROM daily_activities WHERE employee_id = ? AND tanggal = ?
-    `).get(emp.id, date);
-
-    const bukti = db.prepare(`
-      SELECT COUNT(*) as count FROM activity_evidence ae
-      JOIN daily_activities da ON ae.activity_id = da.id
-      WHERE da.employee_id = ? AND da.tanggal = ?
-    `).get(emp.id, date);
-
+    const { jumlah_bukti, ...rest } = emp;
     return {
-      ...emp,
-      jumlah_kegiatan: activities.count,
-      avg_capaian: Math.round(activities.avg_capaian || 0),
-      has_bukti: bukti.count > 0,
-      status: activities.count === 0 ? 'belum' : (activities.avg_capaian >= 80 ? 'lengkap' : 'sebagian')
+      ...rest,
+      avg_capaian: Math.round(emp.avg_capaian || 0),
+      has_bukti: jumlah_bukti > 0,
+      status: emp.jumlah_kegiatan === 0 ? 'belum' : ((emp.avg_capaian || 0) >= 80 ? 'lengkap' : 'sebagian')
     };
   });
 
@@ -118,9 +112,9 @@ router.get('/daily-status', authenticate, requireRole('KPA', 'Kasubbag'), (req, 
 });
 
 // GET /api/activities/:id
-router.get('/:id', authenticate, (req, res) => {
+router.get('/:id', authenticate, async (req, res) => {
   const db = getDb();
-  const activity = db.prepare(`
+  const activity = await db.prepare(`
     SELECT da.*, e.nama as pegawai_nama, pp.nama as pk_nama, pp.kode as pk_kode,
       v.status as verif_status, v.catatan as verif_catatan, v.verified_at,
       u_v.username as verified_by_name
@@ -137,14 +131,14 @@ router.get('/:id', authenticate, (req, res) => {
     return res.status(403).json({ error: 'Akses ditolak' });
   }
 
-  const evidence = db.prepare('SELECT * FROM activity_evidence WHERE activity_id = ?').all(req.params.id);
-  const links = db.prepare('SELECT * FROM evidence_links WHERE activity_id = ?').all(req.params.id);
+  const evidence = await db.prepare('SELECT * FROM activity_evidence WHERE activity_id = ?').all(req.params.id);
+  const links = await db.prepare('SELECT * FROM evidence_links WHERE activity_id = ?').all(req.params.id);
 
   res.json({ ...activity, evidence, links });
 });
 
 // POST /api/activities
-router.post('/', authenticate, (req, res) => {
+router.post('/', authenticate, async (req, res) => {
   const db = getDb();
   const { performance_plan_id, period_id, tanggal, nama_kegiatan, deskripsi, target, satuan, realisasi, status_kegiatan, catatan } = req.body;
 
@@ -157,22 +151,22 @@ router.post('/', authenticate, (req, res) => {
 
   const persentase = (target && realisasi) ? Math.min(Math.round((realisasi / target) * 100), 100) : 0;
 
-  const result = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO daily_activities
     (employee_id, performance_plan_id, period_id, tanggal, nama_kegiatan, deskripsi, target, satuan, realisasi, persentase_capaian, status_kegiatan, catatan)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(empId, performance_plan_id || null, period_id, tanggal, nama_kegiatan, deskripsi || null,
     target || null, satuan || null, realisasi || null, persentase, status_kegiatan || 'selesai', catatan || null);
 
-  const activity = db.prepare('SELECT * FROM daily_activities WHERE id = ?').get(result.lastInsertRowid);
-  logActivity(req.user.id, 'CREATE_ACTIVITY', 'daily_activities', activity.id, null, activity);
+  const activity = await db.prepare('SELECT * FROM daily_activities WHERE id = ?').get(result.lastInsertRowid);
+  await logActivity(req.user.id, 'CREATE_ACTIVITY', 'daily_activities', activity.id, null, activity);
   res.status(201).json(activity);
 });
 
 // PUT /api/activities/:id
-router.put('/:id', authenticate, (req, res) => {
+router.put('/:id', authenticate, async (req, res) => {
   const db = getDb();
-  const old = db.prepare('SELECT * FROM daily_activities WHERE id = ?').get(req.params.id);
+  const old = await db.prepare('SELECT * FROM daily_activities WHERE id = ?').get(req.params.id);
   if (!old) return res.status(404).json({ error: 'Kegiatan tidak ditemukan' });
   if (req.user.role === 'Anggota' && old.employee_id !== req.user.employeeId) {
     return res.status(403).json({ error: 'Akses ditolak' });
@@ -183,7 +177,7 @@ router.put('/:id', authenticate, (req, res) => {
   const r = realisasi ?? old.realisasi;
   const persentase = (t && r) ? Math.min(Math.round((r / t) * 100), 100) : old.persentase_capaian;
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE daily_activities
     SET performance_plan_id=?, nama_kegiatan=?, deskripsi=?, target=?, satuan=?, realisasi=?,
         persentase_capaian=?, status_kegiatan=?, catatan=?, updated_at=CURRENT_TIMESTAMP
@@ -192,22 +186,22 @@ router.put('/:id', authenticate, (req, res) => {
     deskripsi ?? old.deskripsi, t, satuan ?? old.satuan, r, persentase,
     status_kegiatan ?? old.status_kegiatan, catatan ?? old.catatan, req.params.id);
 
-  const updated = db.prepare('SELECT * FROM daily_activities WHERE id = ?').get(req.params.id);
-  logActivity(req.user.id, 'UPDATE_ACTIVITY', 'daily_activities', parseInt(req.params.id), old, updated);
+  const updated = await db.prepare('SELECT * FROM daily_activities WHERE id = ?').get(req.params.id);
+  await logActivity(req.user.id, 'UPDATE_ACTIVITY', 'daily_activities', parseInt(req.params.id), old, updated);
   res.json(updated);
 });
 
 // DELETE /api/activities/:id
-router.delete('/:id', authenticate, (req, res) => {
+router.delete('/:id', authenticate, async (req, res) => {
   const db = getDb();
-  const old = db.prepare('SELECT * FROM daily_activities WHERE id = ?').get(req.params.id);
+  const old = await db.prepare('SELECT * FROM daily_activities WHERE id = ?').get(req.params.id);
   if (!old) return res.status(404).json({ error: 'Kegiatan tidak ditemukan' });
   if (req.user.role === 'Anggota' && old.employee_id !== req.user.employeeId) {
     return res.status(403).json({ error: 'Akses ditolak' });
   }
   if (req.user.role === 'Kasubbag') return res.status(403).json({ error: 'Kasubbag tidak dapat menghapus kegiatan' });
-  db.prepare('DELETE FROM daily_activities WHERE id = ?').run(req.params.id);
-  logActivity(req.user.id, 'DELETE_ACTIVITY', 'daily_activities', parseInt(req.params.id), old, null);
+  await db.prepare('DELETE FROM daily_activities WHERE id = ?').run(req.params.id);
+  await logActivity(req.user.id, 'DELETE_ACTIVITY', 'daily_activities', parseInt(req.params.id), old, null);
   res.json({ message: 'Kegiatan berhasil dihapus' });
 });
 

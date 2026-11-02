@@ -28,10 +28,10 @@ function requireRole(...roles) {
   };
 }
 
-function logActivity(userId, action, resourceType, resourceId, oldData, newData) {
+async function logActivity(userId, action, resourceType, resourceId, oldData, newData) {
   try {
     const db = getDb();
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO activity_logs (user_id, action, resource_type, resource_id, old_data, new_data)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(userId, action, resourceType, resourceId,

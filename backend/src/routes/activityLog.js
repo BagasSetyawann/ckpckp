@@ -5,7 +5,7 @@ const { authenticate } = require('../middleware/auth');
 const router = express.Router();
 
 // GET /api/activity-log
-router.get('/', authenticate, (req, res) => {
+router.get('/', authenticate, async (req, res) => {
   const db = getDb();
   const { limit = 50, offset = 0, user_id, action } = req.query;
 
@@ -23,13 +23,13 @@ router.get('/', authenticate, (req, res) => {
     params.push(req.user.id);
   } else {
     if (user_id) { query += ' AND al.user_id = ?'; params.push(parseInt(user_id)); }
-    if (action) { query += ' AND al.action LIKE ?'; params.push(`%${action}%`); }
+    if (action) { query += ' AND al.action ILIKE ?'; params.push(`%${action}%`); }
   }
 
   query += ' ORDER BY al.created_at DESC LIMIT ? OFFSET ?';
-  params.push(parseInt(limit), parseInt(offset));
+  params.push(parseInt(limit) || 50, parseInt(offset) || 0);
 
-  const logs = db.prepare(query).all(...params);
+  const logs = await db.prepare(query).all(...params);
   res.json(logs);
 });
 
