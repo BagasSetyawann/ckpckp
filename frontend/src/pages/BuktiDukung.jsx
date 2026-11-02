@@ -82,14 +82,32 @@ export default function BuktiDukung() {
     if (!files.length || !selectedActivity) return;
     setUploading(true);
     try {
-      const formData = new FormData();
-      Array.from(files).forEach(f => formData.append('files', f));
-      await api.post(`/evidence/upload/${selectedActivity.id}`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
+      for (const file of Array.from(files)) {
+        const res = await api.post(`/evidence/upload-url/${selectedActivity.id}`, {
+          nama_file: file.name,
+          mime_type: file.type || 'application/octet-stream',
+          ukuran_file: file.size
+        });
+        const { signedUrl, path } = res.data;
+
+        await fetch(signedUrl, {
+          method: 'PUT',
+          body: file,
+          headers: {
+            'Content-Type': file.type || 'application/octet-stream'
+          }
+        });
+
+        await api.post(`/evidence/file/${selectedActivity.id}`, {
+          path: path,
+          nama_file: file.name,
+          mime_type: file.type || 'application/octet-stream',
+          ukuran_file: file.size
+        });
+      }
       fetchEvidence(selectedActivity.id);
     } catch (err) {
-      alert(err.response?.data?.error || 'Gagal mengunggah file');
+      alert(err.response?.data?.error || err.message || 'Gagal mengunggah file');
     } finally {
       setUploading(false);
       e.target.value = '';

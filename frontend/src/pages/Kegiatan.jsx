@@ -524,9 +524,25 @@ function ActivityListView({ periods, plans, employees, canEdit, isKPA, isKasubba
       if (actId) {
         try {
           if (evidence.files.length) {
-            const fd = new FormData();
-            evidence.files.forEach(f => fd.append('files', f));
-            await api.post(`/evidence/upload/${actId}`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+            for (const file of evidence.files) {
+              const res = await api.post(`/evidence/upload-url/${actId}`, {
+                nama_file: file.name,
+                mime_type: file.type || 'application/octet-stream',
+                ukuran_file: file.size
+              });
+              const { signedUrl, path } = res.data;
+              await fetch(signedUrl, {
+                method: 'PUT',
+                body: file,
+                headers: { 'Content-Type': file.type || 'application/octet-stream' }
+              });
+              await api.post(`/evidence/file/${actId}`, {
+                path: path,
+                nama_file: file.name,
+                mime_type: file.type || 'application/octet-stream',
+                ukuran_file: file.size
+              });
+            }
           }
           for (const l of evidence.links) {
             if (!l.judul || !l.url) continue;
